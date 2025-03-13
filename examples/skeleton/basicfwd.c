@@ -155,51 +155,77 @@ static __rte_noreturn void lcore_main(void) {
                     continue;
                 }
 
-                // Check ICMP packet
+                // Check IPv4 header
                 struct rte_ipv4_hdr *ipv4_hdr =
                     (struct rte_ipv4_hdr *)(eth_hdr + 1);
-                if (ipv4_hdr->next_proto_id != IPPROTO_ICMP) {
+                if (ipv4_hdr->next_proto_id != IPPROTO_UDP) {
                     continue;
                 }
 
-                // Check ICMP echo request and send echo reply
-                struct rte_icmp_hdr *icmp_hdr =
-                    (struct rte_icmp_hdr *)(ipv4_hdr + 1);
-                if (icmp_hdr->icmp_type != RTE_ICMP_TYPE_ECHO_REQUEST) {
+                // Check UDP header
+                struct rte_udp_hdr *udp_hdr =
+                    (struct rte_udp_hdr *)(ipv4_hdr + 1);
+                if (udp_hdr->dst_port != rte_cpu_to_be_16(5678)) {
                     continue;
                 }
 
-                // Swap src and dst mac
-                struct rte_ether_addr tmp;
-                rte_ether_addr_copy(&eth_hdr->src_addr, &tmp);
-                rte_ether_addr_copy(&eth_hdr->dst_addr, &eth_hdr->src_addr);
-                rte_ether_addr_copy(&tmp, &eth_hdr->dst_addr);
+                // Check payload
+                char *payload = (char *)(udp_hdr + 1);
+                size_t payload_len = m->pkt_len - sizeof(struct rte_ether_hdr) -
+                                     sizeof(struct rte_ipv4_hdr) -
+                                     sizeof(struct rte_udp_hdr);
 
-                // Print a message to the console
-                printf("Received one ping from MAC ");
+                // Dump Ethernet, IPv4, and UDP headers
+                printf("<Packet Start>\n");
+
+                printf("Ethernet Header = {\n");
+                printf("\tSource MAC: ");
                 for (int i = 0; i < RTE_ETHER_ADDR_LEN; i++) {
-                    printf("%02X ", tmp.addr_bytes[i]);
+                    printf("%02X ", eth_hdr->src_addr.addr_bytes[i]);
                 }
-                printf("\n");
+                printf(",\n");
+                printf("\tDestination MAC: ");
+                for (int i = 0; i < RTE_ETHER_ADDR_LEN; i++) {
+                    printf("%02X ", eth_hdr->dst_addr.addr_bytes[i]);
+                }
+                printf(",\n");
+                printf("\tEthernet Type: 0x%04X,\n",
+                       rte_be_to_cpu_16(eth_hdr->ether_type));
+                printf("},\n");
 
-                // Swap src and dst ip
-                uint32_t tmp_ip = ipv4_hdr->src_addr;
-                ipv4_hdr->src_addr = ipv4_hdr->dst_addr;
-                ipv4_hdr->dst_addr = tmp_ip;
+                printf("IPv4 Header = {\n");
+                printf("\tVersion: %d,\n", ipv4_hdr->version_ihl >> 4);
+                printf("\tIHL: %d,\n", ipv4_hdr->version_ihl & 0x0F);
+                printf("\tTotal Length: %d,\n",
+                       rte_be_to_cpu_16(ipv4_hdr->total_length));
+                printf("\tPacket ID: %d,\n",
+                       rte_be_to_cpu_16(ipv4_hdr->packet_id));
+                uint32_t src_addr = rte_be_to_cpu_32(ipv4_hdr->src_addr);
+                uint32_t dst_addr = rte_be_to_cpu_32(ipv4_hdr->dst_addr);
+                printf("\tsrc_addr: %d.%d.%d.%d,\n", (src_addr >> 24) & 0xFF,
+                       (src_addr >> 16) & 0xFF, (src_addr >> 8) & 0xFF,
+                       src_addr & 0xFF);
+                printf("\tdst_addr: %d.%d.%d.%d,\n", (dst_addr >> 24) & 0xFF,
+                       (dst_addr >> 16) & 0xFF, (dst_addr >> 8) & 0xFF,
+                       dst_addr & 0xFF);
+                printf("},\n");
 
-                // Set icmp_type to ICMP_ECHO_REPLY
-                icmp_hdr->icmp_type = RTE_ICMP_TYPE_ECHO_REPLY;
+                printf("UDP Header = {\n");
+                printf("\tSource Port: %d,\n",
+                       rte_be_to_cpu_16(udp_hdr->src_port));
+                printf("\tDestination Port: %d,\n",
+                       rte_be_to_cpu_16(udp_hdr->dst_port));
+                printf("\tLength: %d,\n", rte_be_to_cpu_16(udp_hdr->dgram_len));
+                printf("},\n");
 
-                // Recalculate checksum
-                icmp_hdr->icmp_cksum = 0;
-                icmp_hdr->icmp_cksum = rte_raw_cksum(
-                    icmp_hdr, m->pkt_len - sizeof(struct rte_ether_hdr) -
-                                  sizeof(struct rte_ipv4_hdr));
-                ipv4_hdr->hdr_checksum = 0;
-                ipv4_hdr->hdr_checksum = rte_ipv4_cksum(ipv4_hdr);
+                // Dump UDP payload
+                printf("Payload = {\n\t");
+                for (size_t i = 0; i < payload_len; i++) {
+                    printf("'%c', ", payload[i]);
+                }
+                printf("\n}\n");
 
-                // Send packet
-                // rte_eth_tx_burst(port, 0, &m, 1);
+                printf("<Packet End>\n\n");
 
                 // free the mbuf
                 rte_pktmbuf_free(m);
