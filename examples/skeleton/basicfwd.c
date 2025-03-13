@@ -15,7 +15,6 @@
 #include <stdlib.h>
 
 #include "config.h"
-#include "rte_ether.h"
 
 #define RX_RING_SIZE 1024
 #define TX_RING_SIZE 1024
@@ -145,11 +144,19 @@ static __rte_noreturn void lcore_main(struct rte_mempool *mbuf_pool) {
             if (!pkt)
                 continue;
 
-            // Append space for Ethernet + IPv4 + ICMP headers
+            // use a simple string as payload
+            const char payload[] = "Hello, World!";
+
+            // Append space for Ethernet + IPv4 + UDP headers
             size_t hdr_len = sizeof(struct rte_ether_hdr) +
                              sizeof(struct rte_ipv4_hdr) +
-                             sizeof(struct rte_icmp_hdr);
-            char *pkt_data = rte_pktmbuf_append(pkt, hdr_len);
+                             sizeof(struct rte_udp_hdr);
+            size_t payload_len = sizeof(payload);
+            char *pkt_data = rte_pktmbuf_append(pkt, hdr_len + payload_len);
+            if (!pkt_data) {
+                rte_pktmbuf_free(pkt);
+                continue;
+            }
 
             // Fill Ethernet header
             struct rte_ether_hdr *eth_hdr = (struct rte_ether_hdr *)pkt_data;
@@ -163,24 +170,27 @@ static __rte_noreturn void lcore_main(struct rte_mempool *mbuf_pool) {
             struct rte_ipv4_hdr *ip_hdr = (struct rte_ipv4_hdr *)(eth_hdr + 1);
             memset(ip_hdr, 0, sizeof(*ip_hdr));
             ip_hdr->version_ihl = 0x45;
-            ip_hdr->total_length = rte_cpu_to_be_16(hdr_len - sizeof(*eth_hdr));
-            ip_hdr->next_proto_id = IPPROTO_ICMP;
+            ip_hdr->total_length =
+                rte_cpu_to_be_16(hdr_len + payload_len - sizeof(*eth_hdr));
+            ip_hdr->next_proto_id = IPPROTO_UDP;
             ip_hdr->src_addr = rte_cpu_to_be_32(src_ip);
             ip_hdr->dst_addr = rte_cpu_to_be_32(dst_ip);
+            ip_hdr->time_to_live = 64; // TTL for safety
 
-            // Fill ICMP header
-            struct rte_icmp_hdr *icmp_hdr = (struct rte_icmp_hdr *)(ip_hdr + 1);
-            memset(icmp_hdr, 0, sizeof(*icmp_hdr));
-            icmp_hdr->icmp_type = RTE_ICMP_TYPE_ECHO_REQUEST;
+            // Fill UDP header
+            struct rte_udp_hdr *udp_hdr = (struct rte_udp_hdr *)(ip_hdr + 1);
+            udp_hdr->src_port = rte_cpu_to_be_16(1234);
+            udp_hdr->dst_port = rte_cpu_to_be_16(5678);
+            udp_hdr->dgram_len =
+                rte_cpu_to_be_16(payload_len + sizeof(*udp_hdr));
 
-            // Compute checksums or rely on offload
-            ip_hdr->time_to_live = 64;
+            // Fill UDP payload
+            char *payload_data = (char *)(udp_hdr + 1);
+            rte_memcpy(payload_data, payload, payload_len);
 
-            // Calculate IP checksum
+            // Calculate checksum
             ip_hdr->hdr_checksum = rte_ipv4_cksum(ip_hdr);
-            icmp_hdr->icmp_cksum =
-                rte_raw_cksum(icmp_hdr, sizeof(struct rte_icmp_hdr));
-            icmp_hdr->icmp_cksum = ~icmp_hdr->icmp_cksum;
+            udp_hdr->dgram_cksum = rte_ipv4_udptcp_cksum(ip_hdr, udp_hdr);
 
             // Send the packet
             uint16_t sent = rte_eth_tx_burst(port, 0, &pkt, 1);
