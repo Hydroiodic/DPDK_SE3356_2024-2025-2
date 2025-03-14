@@ -16,6 +16,7 @@
 
 #define RX_RING_SIZE 1024
 #define TX_RING_SIZE 1024
+#define TX_BURST_SIZE 8
 
 #define NUM_MBUFS 8191
 #define MBUF_CACHE_SIZE 250
@@ -138,10 +139,14 @@ static __rte_noreturn void lcore_main(void) {
          */
         RTE_ETH_FOREACH_DEV(port) {
             // Use an array to store the packets
-            struct rte_mbuf *pkts_burst[32];
-            uint16_t nb_rx = rte_eth_rx_burst(port, 0, pkts_burst, 32);
+            struct rte_mbuf *pkts_burst[TX_BURST_SIZE];
+            uint16_t nb_rx =
+                rte_eth_rx_burst(port, 0, pkts_burst, TX_BURST_SIZE);
             if (nb_rx == 0)
                 continue;
+
+            // Log the number of packets received
+            printf("Receiving a %hu-burst\n", nb_rx);
 
             // Process the packets
             for (uint16_t i = 0; i < nb_rx; i++) {
@@ -225,11 +230,13 @@ static __rte_noreturn void lcore_main(void) {
                 }
                 printf("\n}\n");
 
-                printf("<Packet End>\n\n");
+                printf("<Packet End>\n");
 
                 // free the mbuf
                 rte_pktmbuf_free(m);
             }
+
+            printf("\n");
         }
     }
     /* >8 End of loop. */
