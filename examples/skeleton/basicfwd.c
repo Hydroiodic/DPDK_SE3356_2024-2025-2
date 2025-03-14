@@ -18,6 +18,7 @@
 
 #define RX_RING_SIZE 1024
 #define TX_RING_SIZE 1024
+#define TX_BURST_SIZE 8
 
 #define NUM_MBUFS 8191
 #define MBUF_CACHE_SIZE 250
@@ -118,6 +119,9 @@ static inline int port_init(uint16_t port, struct rte_mempool *mbuf_pool) {
 static __rte_noreturn void lcore_main(struct rte_mempool *mbuf_pool) {
     uint16_t port;
 
+    struct rte_mbuf *tx_mbufs[TX_BURST_SIZE];
+    uint16_t tx_count = 0;
+
     /*
      * Check that the port is on the same NUMA node as the polling thread
      * for best performance.
@@ -192,24 +196,31 @@ static __rte_noreturn void lcore_main(struct rte_mempool *mbuf_pool) {
             ip_hdr->hdr_checksum = rte_ipv4_cksum(ip_hdr);
             udp_hdr->dgram_cksum = rte_ipv4_udptcp_cksum(ip_hdr, udp_hdr);
 
-            // Send the packet
-            uint16_t sent = rte_eth_tx_burst(port, 0, &pkt, 1);
+            // Save the packet in the tx_mbufs array
+            tx_mbufs[tx_count++] = pkt;
 
-            // Check if packet was sent correctly and output any errors
-            if (sent == 0) {
-                printf("Error sending packet on port %" PRIu16 "\n", port);
-                continue;
+            // Send the packet if the array is full
+            if (tx_count == TX_BURST_SIZE) {
+                uint16_t sent = rte_eth_tx_burst(port, 0, tx_mbufs, tx_count);
+
+                // Check if packets were sent correctly and output any errors
+                if (sent < tx_count) {
+                    printf("Error sending packets on port %" PRIu16 "\n", port);
+                    for (uint16_t i = sent; i < tx_count; i++) {
+                        rte_pktmbuf_free(tx_mbufs[i]);
+                    }
+                }
+
+                // Reset the counter
+                tx_count = 0;
+
+                // Print a message to the console
+                printf("Sent packets to MAC ");
+                for (int i = 0; i < RTE_ETHER_ADDR_LEN; i++) {
+                    printf("%02X ", dst_mac[i]);
+                }
+                printf("\n");
             }
-
-            // Free the packet
-            rte_pktmbuf_free(pkt);
-
-            // Print a message to the console
-            printf("Sent a ping to MAC ");
-            for (int i = 0; i < RTE_ETHER_ADDR_LEN; i++) {
-                printf("%02X ", dst_mac[i]);
-            }
-            printf("\n");
         }
 
         // Wait for a while before sending the next packet
